@@ -1,0 +1,89 @@
+# ==============================
+# Python
+# ==============================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# ==============================
+# Environment / Secrets
+# ==============================
+
+.env
+.env.*
+!.env.example
+
+# API keys / credentials
+*.pem
+*.key
+secrets/
+credentials/
+
+# ==============================
+# ChromaDB / Vector Database
+# ==============================
+
+chroma_db/
+chroma_db_*/
+*.sqlite
+*.sqlite3
+
+# ==============================
+# Local AI / Model Files
+# ==============================
+
+models/
+model/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# ==============================
+# PDFs / Private Research Files
+# ==============================
+
+*.pdf
+
+# ==============================
+# Logs / Temporary Files
+# ==============================
+
+*.log
+*.tmp
+*.temp
+
+# ==============================
+# Jupyter
+# ==============================
+
+.ipynb_checkpoints/
+
+# ==============================
+# VS Code
+# ==============================
+
+.vscode/
+
+# ==============================
+# OS Files
+# ==============================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==============================
+# Build / Cache
+# ==============================
+
+*.cache
+.cache/
