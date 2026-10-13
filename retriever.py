@@ -117,7 +117,25 @@ def rerank_candidates(
         if result["reranker_score"] >= MIN_RERANKER_SCORE
     ]
 
-    return filtered_results[:final_k]
+    if filtered_results:
+        return filtered_results[:final_k]
+
+    # Controlled fallback: if all candidates fall below MIN_RERANKER_SCORE,
+    # retain the highest-ranked candidates up to final_k, provided they meet
+    # a baseline relevance threshold above pure noise (e.g. >= 0.0005).
+    if reranked_results:
+        fallback_candidates = [
+            result
+            for result in reranked_results
+            if result["reranker_score"] >= 0.0005
+        ]
+        if fallback_candidates:
+            fallback_results = fallback_candidates[:final_k]
+            for result in fallback_results:
+                result["low_confidence"] = True
+            return fallback_results
+
+    return []
 
 
 # ============================================================
