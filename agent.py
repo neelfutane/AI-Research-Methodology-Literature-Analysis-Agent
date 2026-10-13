@@ -1,7 +1,7 @@
 import json
 import sys
 import re
-import subprocess
+import os
 
 import requests
 
@@ -41,40 +41,33 @@ def choose_tool(question, tools):
     tool_names = [tool.name for tool in tools]
 
     prompt = f"""
-You are the tool router for a research paper assistant.
+You are the tool router for an AI research assistant.
 
 Available tools:
-{chr(10).join("- " + name for name in tool_names)}
+1. search_papers
+   - Use for general research questions across all papers, OR general comparisons when NO specific paper is named.
+   - Arguments: {{"query": "..."}}
+
+2. get_paper_metadata
+   - Use ONLY when the user asks for paper metadata such as title, author, number of pages, or chunk count.
+   - Arguments: {{"paper_name": "..."}}
+
+3. get_page
+   - Use when the user explicitly asks for a specific page number of a paper.
+   - Arguments: {{"paper_name": "...", "page_number": <int>}}
+
+4. search_within_paper
+   - Use when the question is about ONE specific paper (e.g. methods, algorithms, findings), OR when comparing concepts/algorithms WITHIN that same paper.
+   - Arguments: {{"paper_name": "...", "query": "..."}}
+
+5. compare_papers_tool
+   - Use ONLY when comparing TWO different research papers. Both papers must be specified.
+   - Arguments: {{"paper1": "...", "paper2": "...", "query": "..."}}
 
 User question:
 {question}
 
-Choose exactly ONE tool.
-
-Rules:
-
-1. If the user explicitly asks for a page number/content of a page,
-   use get_page.
-
-2. If the user asks for metadata, title, author, number of pages,
-   or indexed chunks of a paper,
-   use get_paper_metadata.
-
-3. If the user asks about one specific paper,
-   use search_within_paper.
-
-4. If the user asks a general research question without specifying
-   a paper, use search_papers.
-
-5. If the user explicitly compares TWO DIFFERENT papers,
-   use compare_papers_tool.
-
-6. If the user compares two algorithms/concepts INSIDE ONE paper,
-   use search_within_paper.
-
-Return ONLY valid JSON.
-
-Format:
+Choose exactly ONE tool. Return ONLY valid JSON:
 {{
   "tool": "tool_name",
   "arguments": {{}}
@@ -109,28 +102,74 @@ Format:
 
 def fix_routing(question, decision):
     q = question.lower()
+    raw_args = decision.get("arguments", {}) if isinstance(decision, dict) else {}
 
     # -----------------------------------------------------
-    # 1. PAGE REQUEST
+    # Paper Name Detection & Normalization
     # -----------------------------------------------------
+    papers = []
 
-    page_match = re.search(r'\bpage\s+(\d+)\b', q)
+    # 1. Check direct .pdf mentions in query
+    for p in re.findall(r'([A-Za-z0-9_\-\.]+\.pdf)', question, re.IGNORECASE):
+        norm = p.lower()
+        if not any(x.lower() == norm for x in papers):
+            papers.append(p)
 
+    # 2. Check known papers in papers/ folder
+    known_papers = []
+    if os.path.exists("papers"):
+        try:
+            known_papers = [f for f in os.listdir("papers") if f.lower().endswith(".pdf")]
+        except Exception:
+            known_papers = []
+
+    for kp in known_papers:
+        stem = os.path.splitext(kp)[0].lower()
+        if re.search(r'(?:\b|_)' + re.escape(stem) + r'(?:\b|_)', q):
+            if not any(x.lower() == kp.lower() for x in papers):
+                papers.append(kp)
+
+    # 3. Check generic patterns like "paper 2" or "paper2"
+    for m in re.finditer(r'\bpaper\s*(\d+)\b', q):
+        cand = f"paper{m.group(1)}.pdf"
+        if not any(x.lower() == cand.lower() for x in papers):
+            papers.append(cand)
+
+    # 4. Check paper names from decision arguments ONLY if verified against known papers
+    # or explicitly named with .pdf in the question (avoids turning algorithms like "CART" into "cart.pdf")
+    for key in ["paper1", "paper2", "paper_name", "paper", "paper_id", "paper_file", "file"]:
+        val = raw_args.get(key)
+        if val and isinstance(val, str):
+            val = val.strip()
+            if val:
+                norm = val if val.lower().endswith(".pdf") else val + ".pdf"
+                is_known = any(kp.lower() == norm.lower() for kp in known_papers)
+                is_explicit_in_q = norm.lower() in q
+                if is_known or is_explicit_in_q:
+                    if not any(x.lower() == norm.lower() for x in papers):
+                        papers.append(norm)
+
+    # -----------------------------------------------------
+    # 1. EXPLICIT PAGE REQUEST
+    # -----------------------------------------------------
+    page_match = re.search(r'\b(?:page|p\.?)\s*[:#]?\s*(\d+)\b', q)
     if page_match:
         page_number = int(page_match.group(1))
 
-        pdf_match = re.search(
-            r'([\w.-]+\.pdf)',
-            question,
-            re.IGNORECASE
-        )
-
-        if pdf_match:
-            paper_name = pdf_match.group(1)
+        if papers:
+            paper_name = papers[0]
         else:
-            paper_name = decision.get(
-                "arguments", {}
-            ).get("paper_name", "")
+            raw_paper = (
+                raw_args.get("paper_name")
+                or raw_args.get("paper")
+                or raw_args.get("paper_id")
+                or raw_args.get("file")
+                or raw_args.get("paper_file")
+                or ""
+            )
+            if raw_paper and not raw_paper.lower().endswith(".pdf"):
+                raw_paper += ".pdf"
+            paper_name = raw_paper
 
         return {
             "tool": "get_page",
@@ -141,87 +180,85 @@ def fix_routing(question, decision):
         }
 
     # -----------------------------------------------------
-    # 2. TWO-PAPER COMPARISON
+    # 2. METADATA REQUEST
     # -----------------------------------------------------
+    metadata_words = [
+        "metadata",
+        "title",
+        "author",
+        "number of pages",
+        "page count",
+        "how many pages",
+        "indexed chunks",
+        "chunk count"
+    ]
+    is_metadata = any(word in q for word in metadata_words)
 
-    pdfs = re.findall(
-        r'([\w.-]+\.pdf)',
-        question,
-        re.IGNORECASE
-    )
+    if is_metadata and len(papers) >= 1:
+        return {
+            "tool": "get_paper_metadata",
+            "arguments": {
+                "paper_name": papers[0]
+            }
+        }
 
+    # -----------------------------------------------------
+    # 3. COMPARISON REQUEST
+    # -----------------------------------------------------
     comparison_words = [
         "compare",
         "comparison",
         "difference",
         "differences",
         "versus",
-        "vs"
+        "vs",
+        "vs."
     ]
+    is_comparison = any(re.search(r'\b' + re.escape(w) + r'\b', q) for w in comparison_words)
 
-    is_comparison = any(word in q for word in comparison_words)
-
-    if is_comparison and len(pdfs) >= 2:
-
-        return {
-            "tool": "compare_papers_tool",
-            "arguments": {
-                "paper1": pdfs[0],
-                "paper2": pdfs[1],
-                "query": question
-            }
-        }
-
-    # -----------------------------------------------------
-    # 3. ONE-PAPER COMPARISON / QUESTION
-    # -----------------------------------------------------
-
-    if is_comparison and len(pdfs) == 1:
-
-        return {
-            "tool": "search_within_paper",
-            "arguments": {
-                "paper_name": pdfs[0],
-                "query": question
-            }
-        }
-
-    # -----------------------------------------------------
-    # 4. SPECIFIC PAPER
-    # -----------------------------------------------------
-
-    if len(pdfs) == 1:
-
-        # Metadata request
-        metadata_words = [
-            "metadata",
-            "title",
-            "author",
-            "number of pages",
-            "indexed chunks"
-        ]
-
-        if any(word in q for word in metadata_words):
+    if is_comparison:
+        # Comparison across two different papers
+        if len(papers) >= 2:
+            comp_query = raw_args.get("query", "").strip() if isinstance(raw_args, dict) else ""
+            if not comp_query or comp_query.lower() in [papers[0].lower(), papers[1].lower()]:
+                comp_query = question
 
             return {
-                "tool": "get_paper_metadata",
+                "tool": "compare_papers_tool",
                 "arguments": {
-                    "paper_name": pdfs[0]
+                    "paper1": papers[0],
+                    "paper2": papers[1],
+                    "query": comp_query
                 }
             }
 
+        # Comparison within one single paper
+        if len(papers) == 1:
+            return {
+                "tool": "search_within_paper",
+                "arguments": {
+                    "paper_name": papers[0],
+                    "query": question
+                }
+            }
+
+        # General comparison without a paper falls through to search_papers
+
+    # -----------------------------------------------------
+    # 4. QUESTION ABOUT ONE SPECIFIC PAPER
+    # -----------------------------------------------------
+    if len(papers) == 1:
         return {
             "tool": "search_within_paper",
             "arguments": {
-                "paper_name": pdfs[0],
+                "paper_name": papers[0],
                 "query": question
             }
         }
 
     # -----------------------------------------------------
-    # 5. GENERAL QUESTION
+    # 5. GENERAL QUESTION (NO SPECIFIED PAPER)
     # -----------------------------------------------------
-
     return {
         "tool": "search_papers",
         "arguments": {
@@ -270,14 +307,7 @@ Answer:
 
 def main():
 
-    # Start MCP server
-    process = subprocess.Popen(
-        [sys.executable, "mcp_server.py"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=sys.stderr,
-        text=True
-    )
+
 
     # Import MCP client components
     from mcp import ClientSession
@@ -400,8 +430,7 @@ def main():
     except Exception as e:
         print(f"\nError: {e}")
 
-    finally:
-        process.terminate()
+
 
 
 if __name__ == "__main__":
