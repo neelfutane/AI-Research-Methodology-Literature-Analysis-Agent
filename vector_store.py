@@ -87,6 +87,19 @@ def add_pdf_to_vector_db(pdf_path):
 
 
     # --------------------------------------------------------
+    # Check whether PDF file exists
+    # --------------------------------------------------------
+
+    if not os.path.exists(pdf_path):
+
+        print(
+            f"Error: File not found: {pdf_path}"
+        )
+
+        return False
+
+
+    # --------------------------------------------------------
     # Check whether PDF already exists
     # --------------------------------------------------------
 
