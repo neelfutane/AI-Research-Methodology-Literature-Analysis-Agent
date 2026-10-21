@@ -22,6 +22,7 @@ def ask_qwen(prompt, max_tokens=300):
             "prompt": prompt,
             "stream": False,
             "think": False,
+            "keep_alive": -1,  # Keep model resident in VRAM/RAM between queries
             "options": {
                 "num_predict": max_tokens
             }
@@ -273,9 +274,9 @@ def fix_routing(question, decision):
 
 def generate_final_answer(question, evidence):
     prompt = f"""
-You are an AI research assistant.
-
-Answer the user's question using ONLY the retrieved evidence.
+You are an AI research assistant. Answer the user's question using ONLY the
+retrieved evidence below. Do not invent facts, results, or formulas not present
+in the evidence.
 
 User question:
 {question}
@@ -284,32 +285,34 @@ Retrieved evidence:
 {evidence}
 
 Instructions:
-
-- Give a clear and concise answer.
-- Do not invent information.
-- Use the paper name and page number from the evidence when useful.
-- If comparing algorithms from the same paper, compare only what the
-  evidence supports.
-- If comparing two papers, keep evidence from each paper separate.
-- Do not claim that a paper has no approach/algorithm unless the
-  retrieved evidence actually establishes that.
-- If the evidence is insufficient, say that clearly.
+- Directly answer the question asked. If the retrieved evidence does NOT mention or discuss the topic requested by the user, state clearly and concisely that the paper does not discuss or contain information on that topic, rather than describing unrelated evidence.
+- When the evidence is relevant, cover EVERY item that the evidence mentions regarding the question. If the evidence lists multiple algorithms, metrics, or methods, explain ALL of them — do not stop early.
+- When the evidence contains a formula, reproduce it in plain-text math
+  (e.g. Accuracy = (TP + TN) / (TP + TN + FP + FN)) and define every
+  variable (TP, TN, FP, FN).
+- Cite the source filename and page number for each key claim.
+- Keep each explanation clear and grounded in the evidence.
+- Do not invent information or results not present in the evidence.
 
 Answer:
 """
 
-    return ask_qwen(prompt, max_tokens=400)
+    return ask_qwen(prompt, max_tokens=800)
 
 
 # ---------------------------------------------------------
-# MAIN
+# ---------------------------------------------------------
+# REUSABLE AGENT QUERY INTERFACE
 # ---------------------------------------------------------
 
-def main():
+async def run_agent_query(question):
+    import asyncio
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
 
-
-
-    # Import MCP client components
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client, StdioServerParameters
 
@@ -318,121 +321,98 @@ def main():
         args=["mcp_server.py"]
     )
 
-    async def run_agent():
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
 
-        from mcp import ClientSession
-        from mcp.client.stdio import stdio_client
+            tools_result = await session.list_tools()
+            tools = tools_result.tools
 
-        async with stdio_client(server_params) as (read, write):
+            qwen_decision = choose_tool(question, tools)
+            decision = fix_routing(question, qwen_decision)
 
-            async with ClientSession(read, write) as session:
+            tool_name = decision["tool"]
+            arguments = decision.get("arguments", {})
 
-                await session.initialize()
+            result = await session.call_tool(tool_name, arguments=arguments)
 
-                tools_result = await session.list_tools()
-                tools = tools_result.tools
+            evidence = ""
+            for content in result.content:
+                if hasattr(content, "text"):
+                    evidence += content.text
 
-                print("\n===== MCP TOOLS =====\n")
+            if not evidence.strip():
+                answer = "No relevant evidence found."
+            else:
+                answer = generate_final_answer(question, evidence)
 
-                for tool in tools:
-                    print(f"- {tool.name}")
+            return {
+                "question": question,
+                "qwen_decision": qwen_decision,
+                "decision": decision,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "evidence": evidence,
+                "answer": answer
+            }
 
-                question = input(
-                    "\nEnter your research question: "
-                ).strip()
 
-                if not question:
-                    return
-
-                # Qwen first chooses
-                qwen_decision = choose_tool(
-                    question,
-                    tools
-                )
-
-                print("\n===== QWEN TOOL DECISION =====\n")
-                print(
-                    json.dumps(
-                        qwen_decision,
-                        indent=4
-                    )
-                )
-
-                # Small deterministic correction layer
-                decision = fix_routing(
-                    question,
-                    qwen_decision
-                )
-
-                print("\n===== FINAL ROUTING DECISION =====\n")
-                print(
-                    json.dumps(
-                        decision,
-                        indent=4
-                    )
-                )
-
-                tool_name = decision["tool"]
-                arguments = decision.get(
-                    "arguments",
-                    {}
-                )
-
-                print(
-                    f"\nSelected MCP tool: {tool_name}"
-                )
-                print(
-                    f"Arguments: {arguments}"
-                )
-
-                print(
-                    f"\n===== EXECUTING MCP TOOL: "
-                    f"{tool_name} =====\n"
-                )
-
-                result = await session.call_tool(
-                    tool_name,
-                    arguments=arguments
-                )
-
-                evidence = ""
-
-                for content in result.content:
-
-                    if hasattr(content, "text"):
-                        evidence += content.text
-
-                print("\n===== MCP TOOL RESULT =====\n")
-                print(evidence)
-
-                # Final answer
-                print("\n===== QWEN FINAL ANSWER =====\n")
-
-                if not evidence.strip():
-                    print("No relevant evidence found.")
-                    return
-
-                answer = generate_final_answer(
-                    question,
-                    evidence
-                )
-
-                print(answer)
-
+def ask_agent(question):
+    """
+    Synchronous entry point for UI or external callers.
+    Safely executes run_agent_query across various event loop environments.
+    """
     import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(run_agent_query(question))).result()
+    else:
+        return asyncio.run(run_agent_query(question))
+
+
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
+
+def main():
+    question = input(
+        "\nEnter your research question: "
+    ).strip()
+
+    if not question:
+        return
 
     try:
-        asyncio.run(run_agent())
+        res = ask_agent(question)
+        print("\n===== QWEN TOOL DECISION =====\n")
+        print(json.dumps(res["qwen_decision"], indent=4))
+
+        print("\n===== FINAL ROUTING DECISION =====\n")
+        print(json.dumps(res["decision"], indent=4))
+
+        print(f"\nSelected MCP tool: {res['tool_name']}")
+        print(f"Arguments: {res['arguments']}")
+
+        print(f"\n===== EXECUTING MCP TOOL: {res['tool_name']} =====\n")
+        print("\n===== MCP TOOL RESULT =====\n")
+        print(res["evidence"])
+
+        print("\n===== QWEN FINAL ANSWER =====\n")
+        print(res["answer"])
 
     except KeyboardInterrupt:
         print("\nStopped.")
-
     except Exception as e:
         print(f"\nError: {e}")
 
 
-
-
 if __name__ == "__main__":
     main()
+
 
