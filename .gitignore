@@ -87,3 +87,10 @@ desktop.ini
 
 *.cache
 .cache/
+
+# ==============================
+# Executables & Binaries
+# ==============================
+*.exe
+cloudflared.exe
+backend_server.py

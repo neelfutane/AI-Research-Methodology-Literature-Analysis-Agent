@@ -1,0 +1,20 @@
+# ============================================================
+# Local Development Dependencies
+# Full pipeline: ChromaDB, Sentence Transformers (PyTorch),
+# Ollama client, PyMuPDF, MCP server, and Streamlit.
+#
+# Install with:
+#   pip install -r requirements-local.txt
+#
+# NOT required for Streamlit Community Cloud deployment.
+# For cloud deployment, only requirements.txt is needed.
+# ============================================================
+
+chromadb==1.5.9
+sentence-transformers==6.0.0
+langchain-text-splitters==1.1.2
+ollama==0.6.2
+pymupdf==1.28.2
+requests==2.34.2
+mcp==2.1.1
+streamlit==1.43.2

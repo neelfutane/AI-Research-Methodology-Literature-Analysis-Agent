@@ -1,8 +1,16 @@
-chromadb==1.5.9
-sentence-transformers==6.0.0
-langchain-text-splitters==1.1.2
-ollama==0.6.2
-pymupdf==1.28.2
-requests==2.34.2
-mcp==2.1.1
+# ============================================================
+# Streamlit Community Cloud Requirements (minimal)
+# ============================================================
+# Only the packages needed to run app.py in Cloud Showcase Mode.
+# Heavy local pipeline dependencies (ChromaDB, sentence-transformers,
+# PyTorch, PyMuPDF, Ollama, MCP) are intentionally excluded:
+#   - They are never imported in cloud_showcase mode.
+#   - Installing PyTorch on Streamlit Cloud free-tier causes OOM
+#     build failures and timeout errors.
+#
+# For local development, install the full pipeline instead:
+#   pip install -r requirements-local.txt
+# ============================================================
+
 streamlit==1.43.2
+requests==2.34.2
